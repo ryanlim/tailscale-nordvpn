@@ -8,16 +8,21 @@ sleep 10s
 ps auxwwf
 
 ip route del default
-ip route add default via 10.1.1.3 dev eth0
+ip route add default via $IP_NORDVPN dev eth0
 
+INSTANCE_NAME_=$(echo $INSTANCE_NAME | sed 's/_/-/g')
+
+#tailscale up --advertise-exit-node --login-server https://headscale.limau.net
 if [ -n "$TAILSCALE_UP_LOGIN_SERVER" ]; then
   LOGIN_SERVER="--login-server $TAILSCALE_UP_LOGIN_SERVER"
-  tailscale up --advertise-exit-node --login-server $TAILSCALE_UP_LOGIN_SERVER
+  tailscale up --advertise-exit-node --hostname $INSTANCE_NAME_ --login-server $TAILSCALE_UP_LOGIN_SERVER
 else
-  tailscale up --advertise-exit-node $LOGIN_SERVER
+  tailscale up --advertise-exit-node --hostname $INSTANCE_NAME_ $LOGIN_SERVER 
 fi
 
-apk add mtr curl
+apk add mtr curl prometheus-node-exporter
+
+nohup /usr/bin/node_exporter > /tmp/node_exporter.log 2>&1 &
 
 while [ 1 ]; do
   sleep 60

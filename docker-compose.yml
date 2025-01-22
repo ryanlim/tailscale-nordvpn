@@ -1,11 +1,9 @@
-version: '3.8'
-
-name: tailnord
+name: tailnord-${INSTANCE_NAME}
 
 services:
   tailscale:
     image: tailscale/tailscale:latest
-    container_name: tailnord-tailscale
+    container_name: tailnord-tailscale-${INSTANCE_NAME}
     hostname: tailnord-tailscale
     command: [
       '/scripts/tailscale_up.sh'
@@ -18,6 +16,8 @@ services:
       - "./tailscale/scripts:/scripts"
     environment:
       - TAILSCALE_UP_LOGIN_SERVER=${TAILSCALE_UP_LOGIN_SERVER}
+      - IP_NORDVPN=${IP_NORDVPN}
+      - INSTANCE_NAME=${INSTANCE_NAME}
     cap_add:
       - net_admin
       - sys_module
@@ -27,12 +27,12 @@ services:
       - net.ipv6.conf.all.forwarding=1
     networks:
       tailnord-net:
-        ipv4_address: 10.1.1.2
+        ipv4_address: ${IP_TAILSCALE}
 
   nordvpn:
     build:
       context: nordvpn
-    container_name: tailnord-nordvpn
+    container_name: tailnord-nordvpn-${INSTANCE_NAME}
     hostname: tailnord-nordvpn
     entrypoint: [
       '/scripts/nordvpn_up.sh'
@@ -47,6 +47,7 @@ services:
       - NORDVPN_ENDPOINT=${NORDVPN_ENDPOINT}
       - NORDVPN_TECHNOLOGY=${NORDVPN_TECHNOLOGY}
       - NORDVPN_OPENVPN_PROTOCOL=${NORDVPN_OPENVPN_PROTOCOL}
+      - IP_SUBNET=${IP_SUBNET}
     volumes:
       - "/dev/net/tun:/dev/net/tun"
       - "./nordvpn/scripts:/scripts"
@@ -55,12 +56,12 @@ services:
       - sys_module
     networks:
       tailnord-net:
-        ipv4_address: 10.1.1.3
+        ipv4_address: ${IP_NORDVPN}
 
 networks:
   tailnord-net:
     enable_ipv6: false
     ipam:
       config:
-        - subnet: "10.1.1.0/24"
+        - subnet: ${IP_SUBNET}
 

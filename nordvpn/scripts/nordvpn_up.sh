@@ -80,7 +80,8 @@ if [ "$NORDVPN_TECHNOLOGY" = "openvpn" ]; then
 fi
 
 # Our local subnet
-nordvpn allowlist add subnet 10.1.1.0/24
+echo nordvpn allowlist add subnet ${IP_SUBNET}
+nordvpn allowlist add subnet ${IP_SUBNET}
 
 # Enable the connection to persist through reboots
 nordvpn set autoconnect on
