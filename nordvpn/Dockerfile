@@ -7,6 +7,7 @@ RUN apt-get update && \
     apt-get update && \
     apt-get install -y --no-install-recommends nordvpn && \
     apt-get install -y --no-install-recommends mtr iputils-ping traceroute less  && \
+    apt-get install -y --no-install-recommends python3-requests python3-flask && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
