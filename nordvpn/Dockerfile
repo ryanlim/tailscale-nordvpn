@@ -11,5 +11,7 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+COPY NordVPN-WebInterface /webapp
+
 ENTRYPOINT /etc/init.d/nordvpn start && sleep 5 && /bin/bash -c "$@"
 CMD bash

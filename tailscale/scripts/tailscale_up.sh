@@ -20,7 +20,16 @@ else
   tailscale up --advertise-exit-node --hostname $INSTANCE_NAME_ $LOGIN_SERVER 
 fi
 
-apk add mtr curl prometheus-node-exporter
+apk add mtr curl prometheus-node-exporter tinyproxy
+
+cat <<EOF > /etc/tinyproxy.conf
+Port 80
+Listen 0.0.0.0
+Timeout 600
+ReversePath "/" "http://${IP_NORDVPN}:80/"
+EOF
+
+tinyproxy -c /etc/tinyproxy.conf
 
 nohup /usr/bin/node_exporter > /tmp/node_exporter.log 2>&1 &
 

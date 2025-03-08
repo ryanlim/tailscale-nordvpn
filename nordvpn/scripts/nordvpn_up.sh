@@ -101,6 +101,8 @@ nordvpn status
 
 echo "Reconnect period: ${RECONNECT_AFTER_SECONDS}s"
 
+nohup python3 /webapp/app.py &
+
 while [ 1 ]; do
   sleep $RECONNECT_AFTER_SECONDS
   echo "--- $(date +%Y%m%d_%H%M%S) ---"
