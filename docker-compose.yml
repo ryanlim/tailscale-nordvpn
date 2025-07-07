@@ -48,6 +48,7 @@ services:
       - NORDVPN_TECHNOLOGY=${NORDVPN_TECHNOLOGY}
       - NORDVPN_OPENVPN_PROTOCOL=${NORDVPN_OPENVPN_PROTOCOL}
       - IP_SUBNET=${IP_SUBNET}
+      - RECONNECT_AFTER_HOURS=24
     volumes:
       - "/dev/net/tun:/dev/net/tun"
       - "./nordvpn/scripts:/scripts"
