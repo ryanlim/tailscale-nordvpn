@@ -10,6 +10,8 @@ RECONNECT_AFTER_SECONDS=$(($RECONNECT_AFTER_HOURS * 60 * 60))
 
 ENDPOINT=${NORDVPN_ENDPOINT:-San_Francisco}
 
+ENDPOINT_STATE="/tmp/nordvpn_connect_endpoint.txt"
+
 if [ -z "$NORDVPN_TOKEN" ]; then
   echo "NORDVPN_TOKEN environment variable is unset."
   exit
@@ -20,7 +22,7 @@ fi
 wait_for_nordvpn_daemon() {
   try=3
   while [ 1 ]; do
-    nordvpn status > /dev/null 2>&1
+    nordvpn status >/dev/null 2>&1
     if [ $? -eq 0 ]; then
       return 0
     fi
@@ -39,6 +41,9 @@ wait_for_nordvpn_daemon() {
 nordvpn_connect() {
   try=3
   while [ 1 ]; do
+    if [ -f "$ENDPOINT_STATE" ]; then
+      ENDPOINT=$(cat "$ENDPOINT_STATE")
+    fi
     nordvpn connect $ENDPOINT
     if [ $? -eq 0 ]; then
       bash /scripts/iptables_rules.sh add
@@ -54,7 +59,6 @@ nordvpn_connect() {
     fi
   done
 }
-
 
 env
 
@@ -115,4 +119,3 @@ while [ 1 ]; do
   nordvpn_connect
   echo
 done
-
