@@ -10,12 +10,16 @@ services:
     ]
     user: root
     restart: always
+    depends_on:
+      - nordvpn
     volumes:
       - "/dev/net/tun:/dev/net/tun"
       - "./tailscale/state:/var/lib/tailscale"
       - "./tailscale/scripts:/scripts"
     environment:
       - TAILSCALE_UP_LOGIN_SERVER=${TAILSCALE_UP_LOGIN_SERVER}
+      - TAILSCALE_AUTHKEY=${TAILSCALE_AUTHKEY:-}
+      - TAILSCALE_ETH_MTU=${TAILSCALE_ETH_MTU:-1385}
       - IP_NORDVPN=${IP_NORDVPN}
       - INSTANCE_NAME=${INSTANCE_NAME}
     cap_add:
@@ -48,7 +52,7 @@ services:
       - NORDVPN_TECHNOLOGY=${NORDVPN_TECHNOLOGY}
       - NORDVPN_OPENVPN_PROTOCOL=${NORDVPN_OPENVPN_PROTOCOL}
       - IP_SUBNET=${IP_SUBNET}
-      - RECONNECT_AFTER_HOURS=${NORDVPN_RECONNECT_AFTER_HOURS}
+      - RECONNECT_AFTER_HOURS=${NORDVPN_RECONNECT_AFTER_HOURS:-}
     volumes:
       - "/dev/net/tun:/dev/net/tun"
       - "./nordvpn/scripts:/scripts"
