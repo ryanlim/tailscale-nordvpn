@@ -18,12 +18,13 @@ The Tailscale container's default route is pointed at the NordVPN container. The
 * A NordVPN account and API token.
 
 ## Features
-* Tailscale exit-node advertisement (`0.0.0.0/0` and `::/0`).
+* Tailscale exit-node advertisement for outbound internet traffic.
 * Optional pre-auth key for headless/automated Tailscale login.
 * Support for a custom Tailscale login server.
 * Connect to any NordVPN region.
 * Automatic NordVPN reconnection on a configurable interval.
 * Configurable `eth0` MTU for reliable performance through the double-tunnel stack.
+* Persistent Tailscale state stored in a Docker named volume.
 
 ## Usage
 
@@ -62,6 +63,20 @@ The Tailscale container's default route is pointed at the NordVPN container. The
      docker compose logs -f tailscale
      ```
      Open the printed URL in a browser to complete login.
+
+## Persistence and Migration
+
+Tailscale state is stored in the Docker named volume `tailscale-state`. This avoids accidentally committing the state file to Git while preserving login state across container restarts.
+
+If you previously used the older bind-mount path at `./tailscale/state`, this repository does **not** migrate that state automatically. Before upgrading, either copy the existing state into the new Docker volume yourself or be prepared to authenticate Tailscale again after restarting the stack.
+
+This repository no longer includes the experimental HTTP control panel for NordVPN. Management is performed through the `nordvpn` CLI inside the container, for example:
+
+```sh
+docker compose exec nordvpn nordvpn status
+docker compose exec nordvpn nordvpn connect Japan
+docker compose exec nordvpn nordvpn disconnect
+```
 
 ## MTU Tuning
 
@@ -104,6 +119,8 @@ docker compose exec nordvpn ip rule
 docker compose exec nordvpn iptables -t nat -L -n -v
 ```
 
+This stack is validated for IPv4 egress through NordVPN. IPv6 forwarding is not configured or tested in the NordVPN container.
+
 Expected results:
 - `nordvpn status` reports `NordLynx / UDP`
 - Tailscale default route points to `IP_NORDVPN` (e.g. `10.1.3.3`)
@@ -129,4 +146,3 @@ IP_SUBNET=10.1.4.0/24
 IP_TAILSCALE=10.1.4.2
 IP_NORDVPN=10.1.4.3
 ```
-

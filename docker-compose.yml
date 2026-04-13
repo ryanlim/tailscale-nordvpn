@@ -14,7 +14,7 @@ services:
       - nordvpn
     volumes:
       - "/dev/net/tun:/dev/net/tun"
-      - "./tailscale/state:/var/lib/tailscale"
+      - "tailscale-state:/var/lib/tailscale"
       - "./tailscale/scripts:/scripts"
     environment:
       - TAILSCALE_UP_LOGIN_SERVER=${TAILSCALE_UP_LOGIN_SERVER}
@@ -62,6 +62,9 @@ services:
     networks:
       tailnord-net:
         ipv4_address: ${IP_NORDVPN}
+
+volumes:
+  tailscale-state:
 
 networks:
   tailnord-net:
