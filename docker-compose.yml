@@ -7,7 +7,7 @@ services:
     container_name: ts-tailscale-${INSTANCE_NAME}
     hostname: ts-tailscale
     command: [
-      '/scripts/tailscale_up.sh'
+      '/tailscale_up.sh'
     ]
     user: root
     restart: always
@@ -15,6 +15,7 @@ services:
       - "/dev/net/tun:/dev/net/tun"
       - "./tailscale/state:/var/lib/tailscale"
       - "./tailscale/scripts:/scripts"
+      - "./tailscale/cert:/etc/nginx/cert:ro"
     environment:
       - TAILSCALE_UP_LOGIN_SERVER=${TAILSCALE_UP_LOGIN_SERVER}
       - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY:-}
@@ -121,7 +122,7 @@ services:
 
 networks:
   ts-net:
-    enable_ipv6: true
+    enable_ipv6: false
     ipam:
       config:
         - subnet: ${IP_SUBNET}

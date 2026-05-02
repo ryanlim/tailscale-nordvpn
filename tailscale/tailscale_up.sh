@@ -45,14 +45,57 @@ is_tailscale_healthy() {
 
 do_tailscale_up
 
-cat <<EOF >/etc/tinyproxy.conf
-Port 80
-Listen 0.0.0.0
-Timeout 600
-ReversePath "/" "http://${IP_PANEL}:80/"
+write_nginx_config() {
+  # Always serve plain HTTP. Add the HTTPS server only if both cert files
+  # are present at /etc/nginx/cert/{fullchain,privkey}.pem (typically
+  # bind-mounted from ./tailscale/cert/ on the host).
+  CONF=/etc/nginx/http.d/panel.conf
+  cat <<EOF >"$CONF"
+server {
+    listen 80;
+    location / {
+        proxy_pass http://${IP_PANEL}:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
 EOF
 
-tinyproxy -c /etc/tinyproxy.conf
+  # Cert filename is typically `fullchain.pem` (Let's Encrypt) or `cert.pem`.
+  # Key filename is typically `privkey.pem` (Let's Encrypt) or `key.pem`.
+  CERT_FILE=""
+  for f in /etc/nginx/cert/fullchain.pem /etc/nginx/cert/cert.pem; do
+    [ -f "$f" ] && CERT_FILE="$f" && break
+  done
+  KEY_FILE=""
+  for f in /etc/nginx/cert/privkey.pem /etc/nginx/cert/key.pem; do
+    [ -f "$f" ] && KEY_FILE="$f" && break
+  done
+
+  if [ -n "$CERT_FILE" ] && [ -n "$KEY_FILE" ]; then
+    cat <<EOF >>"$CONF"
+
+server {
+    listen 443 ssl;
+    http2 on;
+    ssl_certificate     ${CERT_FILE};
+    ssl_certificate_key ${KEY_FILE};
+    location / {
+        proxy_pass http://${IP_PANEL}:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+  fi
+}
+
+write_nginx_config
+nginx -t && nginx
 
 nohup /usr/bin/node_exporter >/tmp/node_exporter.log 2>&1 &
 
