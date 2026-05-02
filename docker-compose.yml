@@ -18,6 +18,7 @@ services:
       - TAILSCALE_UP_LOGIN_SERVER=${TAILSCALE_UP_LOGIN_SERVER}
       - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY:-}
       - IP_NORDVPN=${IP_NORDVPN}
+      - IP_PANEL=${IP_PANEL}
       - INSTANCE_NAME=${INSTANCE_NAME}
     cap_add:
       - net_admin
@@ -50,6 +51,7 @@ services:
 #      - NORDVPN_TECHNOLOGY=${NORDVPN_TECHNOLOGY}
 #      - NORDVPN_OPENVPN_PROTOCOL=${NORDVPN_OPENVPN_PROTOCOL}
 #      - IP_SUBNET=${IP_SUBNET}
+#      - INSTANCE_NAME=${INSTANCE_NAME}
 #      - RECONNECT_AFTER_HOURS=${NORDVPN_RECONNECT_AFTER_HOURS}
 #    volumes:
 #      - "/dev/net/tun:/dev/net/tun"
@@ -86,6 +88,7 @@ services:
       - NORDVPN_TOKEN=${NORDVPN_TOKEN}
       - NORDVPN_TARGET=${NORDVPN_ENDPOINT:-}
       - IP_SUBNET=${IP_SUBNET}
+      - INSTANCE_NAME=${INSTANCE_NAME}
       - RECONNECT_AFTER_HOURS=${NORDVPN_RECONNECT_AFTER_HOURS}
     volumes:
       - "/dev/net/tun:/dev/net/tun"
@@ -96,6 +99,18 @@ services:
     networks:
       ts-net:
         ipv4_address: ${IP_NORDVPN}
+
+  control-panel:
+    build:
+      context: control-panel
+    container_name: ts-control-panel-${INSTANCE_NAME}
+    hostname: ts-control-panel
+    restart: always
+    volumes:
+      - "./control-panel/config:/config:ro"
+    networks:
+      ts-net:
+        ipv4_address: ${IP_PANEL}
 
 networks:
   ts-net:

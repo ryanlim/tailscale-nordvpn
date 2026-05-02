@@ -1,5 +1,7 @@
-from flask import Flask, Blueprint, render_template, request, jsonify
+from flask import Flask, Blueprint, request, jsonify
 from flask_cors import CORS
+import concurrent.futures
+import os
 import subprocess
 import time
 import logging
@@ -8,6 +10,9 @@ import requests
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+BACKEND_TYPE = "nordvpn"
+API_VERSION = "1"
 
 # --- Server list cache -----------------------------------------------------------
 
@@ -77,10 +82,131 @@ def run_nordvpn(*args: str) -> str:
     return (result.stdout + result.stderr).strip()
 
 
+# --- Public-IP lookup (cached) --------------------------------------------------
+
+PUBLIC_IP_CACHE_TTL = 15  # seconds
+PUBLIC_IP_TIMEOUT = 3     # seconds per upstream call
+
+PUBLIC_IP_URLS = {
+    "ipv4": "http://ip.limau.net/?format=json",
+    "ipv6": "http://ip6.limau.net/?format=json",
+}
+
+_public_ip_cache: dict = {"data": None, "timestamp": 0.0}
+
+
+def _fetch_public_ip(url: str):
+    try:
+        response = requests.get(url, timeout=PUBLIC_IP_TIMEOUT)
+        response.raise_for_status()
+        candidates = (response.json() or {}).get("ip_candidates") or []
+    except (requests.RequestException, ValueError):
+        return None
+    if not candidates:
+        return None
+    candidate = candidates[0]
+    geo = candidate.get("geoip_data") or {}
+    asn_pair = candidate.get("ip_asn") or []
+    return {
+        "ip": candidate.get("ip"),
+        "hostname": candidate.get("hostname"),
+        "city": geo.get("city"),
+        "region": geo.get("region"),
+        "country_code": geo.get("country_code"),
+        "asn": asn_pair[1] if len(asn_pair) > 1 else (asn_pair[0] if asn_pair else None),
+    }
+
+
+def get_public_ip() -> dict:
+    now = time.monotonic()
+    if (
+        _public_ip_cache["data"] is not None
+        and (now - _public_ip_cache["timestamp"]) < PUBLIC_IP_CACHE_TTL
+    ):
+        return _public_ip_cache["data"]
+    keys = list(PUBLIC_IP_URLS.keys())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(keys)) as pool:
+        results = list(pool.map(_fetch_public_ip, [PUBLIC_IP_URLS[k] for k in keys]))
+    data = dict(zip(keys, results))
+    _public_ip_cache["data"] = data
+    _public_ip_cache["timestamp"] = now
+    return data
+
+
+def _format_public_ip(info: dict) -> str:
+    parts = [p for p in (info.get("city"), info.get("country_code"), info.get("asn")) if p]
+    suffix = f" ({', '.join(parts)})" if parts else ""
+    return f"{info['ip']}{suffix}"
+
+
+# --- Status parsing -------------------------------------------------------------
+
+# Nordvpn CLI status keys we want to surface unchanged in `fields`.
+_STATUS_KEYS = {
+    "Status", "Hostname", "Country", "City",
+    "Current technology", "Current protocol",
+    "Uptime", "Server IP",
+}
+
+
+def _parse_status(output: str) -> dict:
+    """Parse `nordvpn status` output into a flat key/value dict.
+
+    The CLI emits one ``Key: value`` per line. Splits the ``Transfer`` line
+    into separate ``Received`` / ``Sent`` entries so the panel can render
+    them on their own rows.
+    """
+    fields: dict = {}
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key_raw, value = line.split(":", 1)
+        key = key_raw.strip()
+        value = value.strip()
+        if not key or not value:
+            continue
+        if key == "Transfer":
+            for piece in value.split(","):
+                piece = piece.strip()
+                if piece.endswith(" received"):
+                    fields["Received"] = piece[: -len(" received")].strip()
+                elif piece.endswith(" sent"):
+                    fields["Sent"] = piece[: -len(" sent")].strip()
+        elif key in _STATUS_KEYS:
+            fields[key] = value
+    return fields
+
+
+def _add_public_ip_fields(fields: dict) -> None:
+    public_ip = get_public_ip()
+    for label, key in (("Public IPv4", "ipv4"), ("Public IPv6", "ipv6")):
+        info = public_ip.get(key)
+        if info and info.get("ip"):
+            fields[label] = _format_public_ip(info)
+
+
 # --- API Blueprint (v1) ---------------------------------------------------------
 
 api = Blueprint("api", __name__, url_prefix="/api/v1")
 CORS(api)
+
+
+@api.route("/info", methods=["GET"])
+def backend_info():
+    """Backend identity. See BACKEND_API.md for the contract."""
+    return jsonify({
+        "backend_type": BACKEND_TYPE,
+        "instance": os.environ.get("INSTANCE_NAME", ""),
+        "version": API_VERSION,
+    })
+
+
+@api.route("/public-ip", methods=["GET"])
+def public_ip():
+    if request.args.get("refresh"):
+        _public_ip_cache["data"] = None
+        _public_ip_cache["timestamp"] = 0.0
+    return jsonify(get_public_ip())
 
 
 @api.route("/openapi.json", methods=["GET"])
@@ -381,32 +507,33 @@ def refresh_servers():
 
 @api.route("/status", methods=["GET"])
 def vpn_status():
+    if request.args.get("refresh"):
+        _public_ip_cache["data"] = None
+        _public_ip_cache["timestamp"] = 0.0
+
     status_output = run_nordvpn("status")
 
     if "Status: Connected" not in status_output:
+        fields: dict = {}
+        _add_public_ip_fields(fields)
         return jsonify({
             "status": "Disconnected",
             "details": status_output,
+            "fields": fields,
             "server": None,
             "city_code": None,
             "city": None,
         })
 
-    connected_server_code = None
-    connected_country_code = None
-    connected_country = None
-    connected_city = None
+    fields = _parse_status(status_output)
+    _add_public_ip_fields(fields)
 
-    for line in status_output.splitlines():
-        if "Hostname" in line:
-            connected_server_code = line.split(":", 1)[1].strip().split(".")[0]
-            connected_country_code = connected_server_code[:2]
-        elif "Country" in line:
-            connected_country = line.split(": ", 1)[1]
-        elif "City" in line:
-            connected_city = line.split(": ", 1)[1]
+    hostname = fields.get("Hostname", "")
+    connected_server_code = hostname.split(".")[0] if hostname else None
+    connected_country_code = connected_server_code[:2] if connected_server_code else None
+    connected_country = fields.get("Country")
+    connected_city = fields.get("City")
 
-    # Normalise to lowercase to match codes returned by GET /servers
     city_code = (
         f"{connected_country_code.lower()}|{connected_city.replace(' ', '_').lower()}"
         if connected_country_code and connected_city
@@ -416,6 +543,7 @@ def vpn_status():
     return jsonify({
         "status": "Connected",
         "details": status_output,
+        "fields": fields,
         "server": connected_server_code,
         "city_code": city_code,
         "city": (
@@ -457,18 +585,6 @@ def disconnect_vpn():
 
 
 app.register_blueprint(api)
-
-
-# --- Web UI routes --------------------------------------------------------------
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/api/docs")
-def api_docs():
-    return render_template("api_docs.html")
 
 
 if __name__ == "__main__":

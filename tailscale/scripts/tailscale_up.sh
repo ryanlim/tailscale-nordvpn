@@ -30,7 +30,7 @@ cat <<EOF >/etc/tinyproxy.conf
 Port 80
 Listen 0.0.0.0
 Timeout 600
-ReversePath "/" "http://${IP_NORDVPN}:80/"
+ReversePath "/" "http://${IP_PANEL}:80/"
 EOF
 
 tinyproxy -c /etc/tinyproxy.conf

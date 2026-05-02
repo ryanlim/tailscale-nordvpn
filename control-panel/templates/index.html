@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VPN Control Panel</title>
-    <base href="/vpn" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
     <style>
         body {
@@ -40,9 +39,13 @@
 
             <h1 class="card-title text-center fw-light mb-4">VPN Control Panel</h1>
 
+            <!-- Backend selector -->
+            <label for="backendSelect" class="form-label text-muted small mb-1">Backend</label>
+            <select class="form-select mb-3" id="backendSelect"></select>
+
             <!-- Status badge -->
-            <div class="alert alert-danger d-flex justify-content-center align-items-center fw-semibold mb-3 position-relative" id="statusBox" role="status">
-                <span id="statusText">Status: Disconnected</span>
+            <div class="alert alert-secondary d-flex justify-content-center align-items-center fw-semibold mb-3 position-relative" id="statusBox" role="status">
+                <span id="statusText">Status: …</span>
                 <button type="button" class="refresh-btn position-absolute end-0 me-2" id="refreshBtn" title="Refresh" aria-label="Refresh">↻</button>
             </div>
 
@@ -53,9 +56,7 @@
 
             <!-- Server selector + connect -->
             <form class="mb-2" onsubmit="handleSubmit(event, 'connect');">
-                <select class="form-select mb-2" id="serverSelect" name="server">
-                    <!-- populated dynamically -->
-                </select>
+                <select class="form-select mb-2" id="serverSelect" name="server"></select>
                 <button class="btn btn-success w-100" type="submit">Connect to VPN</button>
             </form>
 
@@ -69,12 +70,28 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Build the API base URL relative to wherever the app is mounted, so this
-    // works both directly and behind a reverse proxy (e.g. /vpn/).
-    const API_BASE = window.location.pathname.replace(/\/?$/, '') + '/api/v1/';
+    const PANEL_BASE   = window.location.pathname.replace(/\/?$/, '') + '/api/v1/';
+    const STORAGE_KEY  = 'vpn-panel-backend';
+    let   currentBackend = null;
+    let   pollTimer = null;
+
+    function backendApi(suffix) {
+        // suffix is e.g. 'status', 'connect', 'status?refresh=1'
+        if (!currentBackend) return null;
+        return `${PANEL_BASE}backends/${encodeURIComponent(currentBackend)}/${suffix}`;
+    }
+
+    function showToast(message, isError = false) {
+        const toastEl = document.getElementById('toast');
+        document.getElementById('toastBody').textContent = message;
+        toastEl.classList.toggle('bg-danger', isError);
+        toastEl.classList.toggle('bg-dark',   !isError);
+        bootstrap.Toast.getOrCreateInstance(toastEl, {delay: 5000}).show();
+    }
 
     function handleSubmit(event, action) {
         event.preventDefault();
+        if (!currentBackend) return;
 
         let options;
         if (action === 'connect') {
@@ -88,7 +105,7 @@
             options = {method: 'POST'};
         }
 
-        fetch(API_BASE + action, options)
+        fetch(backendApi(action), options)
             .then(response => response.json().then(data => ({ok: response.ok, data})))
             .then(({ok, data}) => {
                 if (ok) {
@@ -101,16 +118,6 @@
             .catch(error => showToast('Error: ' + error.message, true));
     }
 
-    function showToast(message, isError = false) {
-        const toastEl = document.getElementById('toast');
-        document.getElementById('toastBody').textContent = message;
-        toastEl.classList.toggle('bg-danger', isError);
-        toastEl.classList.toggle('bg-dark',   !isError);
-        bootstrap.Toast.getOrCreateInstance(toastEl, {delay: 5000}).show();
-    }
-
-    // Fields to surface in the status table, in display order. Each entry
-    // is [api field name, label]. Anything not in the response is skipped.
     const STATUS_FIELDS = [
         ['Country',          'Country'],
         ['City',             'City'],
@@ -118,6 +125,8 @@
         ['Endpoint',         'Endpoint'],
         ['Load',             'Load'],
         ['Technology',       'Technology'],
+        ['Current technology', 'Technology'],
+        ['Current protocol', 'Protocol'],
         ['Uptime',           'Uptime'],
         ['Latest handshake', 'Last handshake'],
         ['Received',         'Received'],
@@ -126,48 +135,53 @@
         ['Public IPv6',      'Public IPv6'],
     ];
 
-    function updateStatus(force = false) {
-        const refreshBtn  = document.getElementById('refreshBtn');
+    function renderStatus(data) {
         const statusBox   = document.getElementById('statusBox');
         const statusText  = document.getElementById('statusText');
         const statusTable = document.getElementById('statusTable');
         const tbody       = statusTable.querySelector('tbody');
+        tbody.innerHTML = '';
 
+        const baseClasses = 'd-flex justify-content-center align-items-center fw-semibold mb-3 position-relative';
+        if (data.status === 'Connected') {
+            statusBox.className = 'alert alert-success ' + baseClasses;
+        } else {
+            statusBox.className = 'alert alert-danger ' + baseClasses;
+        }
+
+        const fields = data.fields || {};
+        STATUS_FIELDS.forEach(([key, label]) => {
+            const value = fields[key];
+            if (value === undefined || value === null || value === '') return;
+            const row = document.createElement('tr');
+            const th  = document.createElement('th');
+            const td  = document.createElement('td');
+            th.scope = 'row';
+            th.className = 'text-muted fw-normal';
+            th.style.width = '40%';
+            th.textContent = label;
+            td.className = 'font-monospace small';
+            td.textContent = value;
+            row.appendChild(th);
+            row.appendChild(td);
+            tbody.appendChild(row);
+        });
+        statusTable.classList.toggle('d-none', tbody.children.length === 0);
+
+        statusText.textContent = `Status: ${data.status}`;
+    }
+
+    function updateStatus(force = false) {
+        if (!currentBackend) return Promise.resolve();
+        const refreshBtn = document.getElementById('refreshBtn');
         if (refreshBtn) refreshBtn.classList.add('spinning');
 
-        const url = API_BASE + 'status' + (force ? '?refresh=1' : '');
-        return fetch(url)
+        return fetch(backendApi('status' + (force ? '?refresh=1' : '')))
             .then(response => response.json())
-            .then(data => {
-                tbody.innerHTML = '';
-
-                const baseClasses = 'd-flex justify-content-center align-items-center fw-semibold mb-3 position-relative';
-                if (data.status === 'Connected') {
-                    statusBox.className = 'alert alert-success ' + baseClasses;
-                } else {
-                    statusBox.className = 'alert alert-danger ' + baseClasses;
-                }
-
-                const fields = data.fields || {};
-                STATUS_FIELDS.forEach(([key, label]) => {
-                    const value = fields[key];
-                    if (value === undefined || value === null || value === '') return;
-                    const row = document.createElement('tr');
-                    const th  = document.createElement('th');
-                    const td  = document.createElement('td');
-                    th.scope = 'row';
-                    th.className = 'text-muted fw-normal';
-                    th.style.width = '40%';
-                    th.textContent = label;
-                    td.className = 'font-monospace small';
-                    td.textContent = value;
-                    row.appendChild(th);
-                    row.appendChild(td);
-                    tbody.appendChild(row);
-                });
-                statusTable.classList.toggle('d-none', tbody.children.length === 0);
-
-                statusText.textContent = `Status: ${data.status}`;
+            .then(renderStatus)
+            .catch(err => {
+                console.warn('updateStatus failed:', err);
+                document.getElementById('statusText').textContent = 'Status: backend unreachable';
             })
             .finally(() => {
                 if (refreshBtn) refreshBtn.classList.remove('spinning');
@@ -185,12 +199,16 @@
     }
 
     function loadServers(retryDelay = 2000) {
-        fetch(API_BASE + 'servers')
+        if (!currentBackend) return;
+        const callerBackend = currentBackend;
+        fetch(backendApi('servers'))
             .then(response => {
                 if (!response.ok) throw new Error('HTTP ' + response.status);
                 return response.json();
             })
             .then(servers => {
+                // If user switched backend mid-flight, drop the result.
+                if (callerBackend !== currentBackend) return;
                 if (!Array.isArray(servers)) {
                     throw new Error('unexpected response: ' + JSON.stringify(servers));
                 }
@@ -204,15 +222,15 @@
                 });
 
                 // Pre-select the currently connected city, if any
-                fetch(API_BASE + 'status')
+                fetch(backendApi('status'))
                     .then(response => response.json())
                     .then(data => {
-                        if (data.city_code) {
-                            serverSelect.value = data.city_code;
-                        }
+                        if (callerBackend !== currentBackend) return;
+                        if (data.city_code) serverSelect.value = data.city_code;
                     });
             })
             .catch(err => {
+                if (callerBackend !== currentBackend) return;
                 console.warn('loadServers failed, retrying:', err);
                 setServerSelectPlaceholder('Loading server list…');
                 const next = Math.min(retryDelay * 2, 60000);
@@ -220,12 +238,46 @@
             });
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    function selectBackend(name) {
+        currentBackend = name;
+        localStorage.setItem(STORAGE_KEY, name);
+        document.getElementById('backendSelect').value = name;
         setServerSelectPlaceholder('Loading server list…');
-        document.getElementById('refreshBtn').addEventListener('click', () => updateStatus(true));
+        document.getElementById('statusText').textContent = 'Status: …';
         updateStatus();
         loadServers();
-        setInterval(updateStatus, 10000);
+    }
+
+    function loadBackends() {
+        return fetch(PANEL_BASE + 'backends')
+            .then(response => response.json())
+            .then(data => {
+                const backends = (data && data.backends) || [];
+                const select = document.getElementById('backendSelect');
+                select.innerHTML = '';
+                backends.forEach(b => {
+                    const option = document.createElement('option');
+                    option.value = b.name;
+                    option.text  = b.label || b.name;
+                    select.add(option);
+                });
+                if (backends.length === 0) {
+                    showToast('No backends configured.', true);
+                    return;
+                }
+                const stored = localStorage.getItem(STORAGE_KEY);
+                const initial = backends.find(b => b.name === stored)
+                    ? stored
+                    : backends[0].name;
+                selectBackend(initial);
+            });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('refreshBtn').addEventListener('click', () => updateStatus(true));
+        document.getElementById('backendSelect').addEventListener('change', e => selectBackend(e.target.value));
+        loadBackends();
+        pollTimer = setInterval(updateStatus, 10000);
     });
 </script>
 </body>

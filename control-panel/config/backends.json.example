@@ -1,0 +1,9 @@
+{
+  "backends": [
+    {
+      "name": "wg-us",
+      "label": "NordVPN-WG (US)",
+      "url": "http://ts-nordvpn-vpn-generic-wg:80"
+    }
+  ]
+}

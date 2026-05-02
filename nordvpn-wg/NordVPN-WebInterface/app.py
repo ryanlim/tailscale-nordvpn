@@ -1,6 +1,7 @@
-from flask import Flask, Blueprint, render_template, request, jsonify
+from flask import Flask, Blueprint, request, jsonify
 from flask_cors import CORS
 import concurrent.futures
+import os
 import subprocess
 import sys
 import time
@@ -17,6 +18,9 @@ import nordvpn_api  # noqa: E402
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+BACKEND_TYPE = "nordvpn-wg"
+API_VERSION = "1"
 
 
 # --- Public-IP lookup (cached) --------------------------------------------------
@@ -98,6 +102,16 @@ def run_nordvpn(*args: str) -> str:
 
 api = Blueprint("api", __name__, url_prefix="/api/v1")
 CORS(api)
+
+
+@api.route("/info", methods=["GET"])
+def backend_info():
+    """Backend identity. See BACKEND_API.md for the contract."""
+    return jsonify({
+        "backend_type": BACKEND_TYPE,
+        "instance": os.environ.get("INSTANCE_NAME", ""),
+        "version": API_VERSION,
+    })
 
 
 @api.route("/openapi.json", methods=["GET"])
@@ -532,18 +546,6 @@ def disconnect_vpn():
 
 
 app.register_blueprint(api)
-
-
-# --- Web UI routes --------------------------------------------------------------
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/api/docs")
-def api_docs():
-    return render_template("api_docs.html")
 
 
 if __name__ == "__main__":
