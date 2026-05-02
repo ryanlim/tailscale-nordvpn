@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""nordvpn — WireGuard-based replacement for the NordVPN CLI.
+
+Subcommands:
+  connect [target]      Connect to a WireGuard server. Target may be a country,
+                        city, group identifier/title, or server hostname (e.g.
+                        us1234). Underscores are treated as spaces. Empty target
+                        picks NordVPN's recommendation.
+  disconnect            Tear down the tunnel.
+  status                Show current connection state.
+  countries             List all available countries.
+  cities <country>      List cities in a country.
+  groups                List server groups (P2P, Double VPN, etc.).
+  servers [target]      Show top recommended servers for a target.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from nordvpn_api import (
+    api_get,
+    list_countries,
+    list_groups,
+    refresh_cache,
+)
+
+WG_INTERFACE = "wg0"
+WG_CONF = Path("/etc/wireguard/wg0.conf")
+PRIVATE_KEY_FILE = Path("/etc/wireguard/private.key")
+TARGET_FILE = Path("/etc/wireguard/.target")
+STATE_FILE = Path("/run/nordvpn-wg-state.json")
+NORD_CLIENT_ADDR = "10.5.0.2/32"
+WG_PORT = 51820
+WG_TECH = "wireguard_udp"
+
+
+def normalize(s):
+    return s.strip().replace("_", " ").lower()
+
+
+def resolve_target(target):
+    """Return (filter list, label dict) for a target string."""
+    if not target:
+        return [], {"target": "auto"}
+
+    m = re.match(r"^([a-z]{2})(\d+)$", target.lower())
+    if m:
+        hostname = f"{target.lower()}.nordvpn.com"
+        return [("filters[hostname]", hostname)], {"target": hostname}
+
+    # Accept "xx|city_name" (matches the web UI's city codes).
+    m = re.match(r"^([a-z]{2})\|(.+)$", target.lower())
+    if m:
+        country_code, city_part = m.group(1), m.group(2).replace("_", " ")
+        for c in list_countries():
+            if c.get("code", "").lower() != country_code:
+                continue
+            for city in c.get("cities", []):
+                if city["name"].lower() == city_part:
+                    return (
+                        [("filters[country_city_id]", str(city["id"]))],
+                        {"country": c["name"], "city": city["name"]},
+                    )
+            raise SystemExit(
+                f"City '{city_part}' not found in {c['name']}."
+            )
+        raise SystemExit(f"Country code '{country_code}' not found.")
+
+    target_norm = normalize(target)
+    countries = list_countries()
+
+    for c in countries:
+        if c["name"].lower() == target_norm:
+            return [("filters[country_id]", str(c["id"]))], {"country": c["name"]}
+
+    for c in countries:
+        for city in c.get("cities", []):
+            if city["name"].lower() == target_norm:
+                return (
+                    [("filters[country_city_id]", str(city["id"]))],
+                    {"country": c["name"], "city": city["name"]},
+                )
+
+    groups = list_groups()
+    for g in groups:
+        if g["title"].lower() == target_norm or g["identifier"] == target.lower():
+            return (
+                [("filters[servers_groups][identifier]", g["identifier"])],
+                {"group": g["title"]},
+            )
+
+    raise SystemExit(f"Could not resolve '{target}' to a country, city, group, or server.")
+
+
+def fetch_servers(target):
+    filters, label = resolve_target(target)
+    params = [
+        ("limit", "5"),
+        ("filters[servers_technologies][identifier]", WG_TECH),
+    ] + filters
+    servers = api_get("servers/recommendations", params)
+    return servers, label
+
+
+def extract_wg_metadata(server):
+    pubkey = None
+    for tech in server.get("technologies", []):
+        if tech.get("identifier") != WG_TECH:
+            continue
+        if tech.get("pivot", {}).get("status") != "online":
+            continue
+        for md in tech.get("metadata", []):
+            if md.get("name") == "public_key":
+                pubkey = md["value"]
+                break
+    ip = server.get("station")
+    if not ip:
+        for entry in server.get("ips", []):
+            ip_obj = entry.get("ip", {})
+            if entry.get("type") == "entry" or entry.get("is_default"):
+                ip = ip_obj.get("ip")
+                if ip:
+                    break
+        if not ip and server.get("ips"):
+            ip = server["ips"][0].get("ip", {}).get("ip")
+    loc = server.get("locations", [{}])[0].get("country", {})
+    city = loc.get("city", {}).get("name", "?")
+    country = loc.get("name", "?")
+    return pubkey, ip, country, city
+
+
+def pick_server(target):
+    servers, label = fetch_servers(target)
+    for s in servers:
+        pubkey, ip, country, city = extract_wg_metadata(s)
+        if pubkey and ip:
+            return {
+                "hostname": s["hostname"],
+                "ip": ip,
+                "public_key": pubkey,
+                "country": country,
+                "city": city,
+                "load": s.get("load"),
+                "label": label,
+            }
+    raise SystemExit(f"No usable WireGuard server found for '{target or 'auto'}'.")
+
+
+def write_conf(server):
+    private_key = PRIVATE_KEY_FILE.read_text().strip()
+    conf = (
+        "[Interface]\n"
+        f"PrivateKey = {private_key}\n"
+        f"Address = {NORD_CLIENT_ADDR}\n"
+        "\n"
+        "[Peer]\n"
+        f"PublicKey = {server['public_key']}\n"
+        "AllowedIPs = 0.0.0.0/0\n"
+        f"Endpoint = {server['ip']}:{WG_PORT}\n"
+        "PersistentKeepalive = 25\n"
+    )
+    WG_CONF.write_text(conf)
+    WG_CONF.chmod(0o600)
+
+
+def is_up():
+    return (
+        subprocess.run(
+            ["ip", "link", "show", WG_INTERFACE],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def run_iptables(action):
+    subprocess.run(["bash", "/scripts/iptables_rules.sh", action], check=False)
+
+
+def cmd_connect(args):
+    if not PRIVATE_KEY_FILE.exists():
+        raise SystemExit(
+            f"Missing {PRIVATE_KEY_FILE}. Run nordvpn-wg/scripts/extract_key.sh first."
+        )
+
+    target = args.target if args.target is not None else os.environ.get("NORDVPN_TARGET", "")
+    print(f"Resolving target: {target or 'auto'}", flush=True)
+    server = pick_server(target)
+    print(
+        f"Selected: {server['hostname']} ({server['city']}, {server['country']}) "
+        f"load={server['load']}",
+        flush=True,
+    )
+
+    if is_up():
+        _disconnect(quiet=True)
+
+    write_conf(server)
+    TARGET_FILE.write_text(target)
+
+    subprocess.run(["wg-quick", "up", WG_INTERFACE], check=True)
+
+    state = {
+        "connected_at": time.time(),
+        "target": target,
+        "hostname": server["hostname"],
+        "ip": server["ip"],
+        "country": server["country"],
+        "city": server["city"],
+        "load": server["load"],
+    }
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+    run_iptables("add")
+    print(f"You are connected to {server['city']}, {server['country']}!")
+
+
+def _disconnect(quiet=False):
+    if not is_up():
+        if not quiet:
+            print("You are not connected to a VPN.")
+        return
+    run_iptables("del")
+    subprocess.run(["wg-quick", "down", WG_INTERFACE], check=False)
+    if STATE_FILE.exists():
+        STATE_FILE.unlink()
+    if not quiet:
+        print("You are disconnected from NordVPN.")
+
+
+def cmd_disconnect(args):
+    _disconnect()
+
+
+def cmd_status(args):
+    if not is_up():
+        print("Status: Disconnected")
+        return
+    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    print("Status: Connected")
+    print(f"Hostname: {state.get('hostname', '?')}")
+    print(f"IP: {state.get('ip', '?')}")
+    print(f"Country: {state.get('country', '?')}")
+    print(f"City: {state.get('city', '?')}")
+    print(f"Load: {state.get('load', '?')}")
+    print("Technology: WireGuard (NordLynx)")
+    if "connected_at" in state:
+        u = int(time.time() - state["connected_at"])
+        print(f"Uptime: {u // 3600}h {(u % 3600) // 60}m {u % 60}s")
+    print()
+    sys.stdout.flush()
+    subprocess.run(["wg", "show", WG_INTERFACE])
+
+
+def cmd_countries(args):
+    for c in sorted(list_countries(), key=lambda c: c["name"]):
+        print(c["name"].replace(" ", "_"))
+
+
+def cmd_cities(args):
+    target_norm = normalize(args.country)
+    for c in list_countries():
+        if c["name"].lower() == target_norm:
+            for city in sorted(c.get("cities", []), key=lambda c: c["name"]):
+                print(city["name"].replace(" ", "_"))
+            return
+    raise SystemExit(f"Country '{args.country}' not found.")
+
+
+def cmd_groups(args):
+    for g in sorted(list_groups(), key=lambda g: g["title"]):
+        print(f"{g['identifier']:35s}  {g['title']}")
+
+
+def cmd_servers(args):
+    target = args.target or ""
+    servers, _ = fetch_servers(target)
+    for s in servers[: args.limit]:
+        loc = s["locations"][0]["country"]
+        city = loc.get("city", {}).get("name", "?")
+        print(f"{s['hostname']:30s}  {city}, {loc['name']}  load={s.get('load')}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="nordvpn", description=__doc__)
+    p.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Drop the local API cache before running the subcommand.",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    c = sub.add_parser("connect", help="Connect to a WireGuard server")
+    c.add_argument("target", nargs="?", default=None)
+    c.set_defaults(func=cmd_connect)
+
+    sub.add_parser("disconnect", help="Tear down the tunnel").set_defaults(func=cmd_disconnect)
+    sub.add_parser("status", help="Show connection status").set_defaults(func=cmd_status)
+    sub.add_parser("countries", help="List countries").set_defaults(func=cmd_countries)
+
+    c = sub.add_parser("cities", help="List cities in a country")
+    c.add_argument("country")
+    c.set_defaults(func=cmd_cities)
+
+    sub.add_parser("groups", help="List server groups").set_defaults(func=cmd_groups)
+
+    c = sub.add_parser("servers", help="Show top recommended servers")
+    c.add_argument("target", nargs="?", default="")
+    c.add_argument("--limit", type=int, default=5)
+    c.set_defaults(func=cmd_servers)
+
+    args = p.parse_args()
+    if args.refresh_cache:
+        refresh_cache()
+    try:
+        args.func(args)
+    except requests.RequestException as e:
+        raise SystemExit(f"NordVPN API error: {e}")
+
+
+if __name__ == "__main__":
+    main()

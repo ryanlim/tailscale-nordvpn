@@ -1,0 +1,4 @@
+*.key
+wg0.conf
+.target
+.cache.json

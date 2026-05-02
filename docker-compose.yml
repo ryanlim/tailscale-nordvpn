@@ -1,10 +1,10 @@
-name: tailnord-${INSTANCE_NAME}
+name: ts-${INSTANCE_NAME}
 
 services:
   tailscale:
     image: tailscale/tailscale:latest
-    container_name: tailnord-tailscale-${INSTANCE_NAME}
-    hostname: tailnord-tailscale
+    container_name: ts-tailscale-${INSTANCE_NAME}
+    hostname: ts-tailscale
     command: [
       '/scripts/tailscale_up.sh'
     ]
@@ -16,6 +16,7 @@ services:
       - "./tailscale/scripts:/scripts"
     environment:
       - TAILSCALE_UP_LOGIN_SERVER=${TAILSCALE_UP_LOGIN_SERVER}
+      - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY:-}
       - IP_NORDVPN=${IP_NORDVPN}
       - INSTANCE_NAME=${INSTANCE_NAME}
     cap_add:
@@ -26,17 +27,56 @@ services:
       - net.ipv4.conf.all.forwarding=1
       - net.ipv6.conf.all.forwarding=1
     networks:
-      tailnord-net:
+      ts-net:
         ipv4_address: ${IP_TAILSCALE}
 
-  nordvpn:
+# Uncomment this section if you prefer to use the NordVPN official client.
+#  nordvpn:
+#    build:
+#      context: nordvpn
+#    container_name: ts-nordvpn-${INSTANCE_NAME}
+#    hostname: ts-nordvpn
+#    entrypoint: [
+#      '/scripts/nordvpn_up.sh'
+#    ]
+#    restart: always
+#    sysctls:
+#      - net.ipv4.ip_forward=1
+#      - net.ipv4.conf.all.forwarding=1
+#      - net.ipv6.conf.all.disable_ipv6=1
+#    environment:
+#      - NORDVPN_TOKEN=${NORDVPN_TOKEN}
+#      - NORDVPN_ENDPOINT=${NORDVPN_ENDPOINT}
+#      - NORDVPN_TECHNOLOGY=${NORDVPN_TECHNOLOGY}
+#      - NORDVPN_OPENVPN_PROTOCOL=${NORDVPN_OPENVPN_PROTOCOL}
+#      - IP_SUBNET=${IP_SUBNET}
+#      - RECONNECT_AFTER_HOURS=${NORDVPN_RECONNECT_AFTER_HOURS}
+#    volumes:
+#      - "/dev/net/tun:/dev/net/tun"
+#      - "./nordvpn/scripts:/scripts"
+#    cap_add:
+#      - net_admin
+#      - sys_module
+#    networks:
+#      ts-net:
+#        ipv4_address: ${IP_NORDVPN}
+
+  # WireGuard-based replacement for the nordvpn service above.
+  # Prerequisites:
+  #   1. Fetch your NordLynx private key (uses NORDVPN_TOKEN from .env):
+  #        ./nordvpn-wg/scripts/extract_key.sh > ./nordvpn-wg/wireguard/private.key
+  #   2. Comment out the `nordvpn` service above (it shares container_name + IP),
+  #      then uncomment this block and `docker compose up -d --build nordvpn-wg`.
+  # Runtime usage (mirrors the NordVPN CLI):
+  #   docker exec -it ts-${INSTANCE_NAME} nordvpn status
+  #   docker exec -it ts-${INSTANCE_NAME} nordvpn connect Tokyo
+  #   docker exec -it ts-${INSTANCE_NAME} nordvpn countries
+  #
+  nordvpn-wg:
     build:
-      context: nordvpn
-    container_name: tailnord-nordvpn-${INSTANCE_NAME}
-    hostname: tailnord-nordvpn
-    entrypoint: [
-      '/scripts/nordvpn_up.sh'
-    ]
+      context: nordvpn-wg
+    container_name: ts-nordvpn-${INSTANCE_NAME}
+    hostname: ts-nordvpn
     restart: always
     sysctls:
       - net.ipv4.ip_forward=1
@@ -44,24 +84,22 @@ services:
       - net.ipv6.conf.all.disable_ipv6=1
     environment:
       - NORDVPN_TOKEN=${NORDVPN_TOKEN}
-      - NORDVPN_ENDPOINT=${NORDVPN_ENDPOINT}
-      - NORDVPN_TECHNOLOGY=${NORDVPN_TECHNOLOGY}
-      - NORDVPN_OPENVPN_PROTOCOL=${NORDVPN_OPENVPN_PROTOCOL}
+      - NORDVPN_TARGET=${NORDVPN_ENDPOINT:-}
       - IP_SUBNET=${IP_SUBNET}
       - RECONNECT_AFTER_HOURS=${NORDVPN_RECONNECT_AFTER_HOURS}
     volumes:
       - "/dev/net/tun:/dev/net/tun"
-      - "./nordvpn/scripts:/scripts"
+      - "./nordvpn-wg/wireguard:/etc/wireguard"
     cap_add:
       - net_admin
       - sys_module
     networks:
-      tailnord-net:
+      ts-net:
         ipv4_address: ${IP_NORDVPN}
 
 networks:
-  tailnord-net:
-    enable_ipv6: false
+  ts-net:
+    enable_ipv6: true
     ipam:
       config:
         - subnet: ${IP_SUBNET}
