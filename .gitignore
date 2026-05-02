@@ -1,5 +1,6 @@
 .env
 /tailscale/state/
+/tailscale/cert/
 /control-panel/config/backends.json
 __pycache__/
 *.pyc
