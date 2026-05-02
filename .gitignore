@@ -1,6 +1,8 @@
 .env
 /tailscale/state/
 /tailscale/cert/
+/tailscale/scripts/*
+!/tailscale/scripts/README.txt
 /control-panel/config/backends.json
 __pycache__/
 *.pyc
