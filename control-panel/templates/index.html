@@ -57,7 +57,7 @@
             <!-- Server selector + connect -->
             <form class="mb-2" onsubmit="handleSubmit(event, 'connect');">
                 <select class="form-select mb-2" id="serverSelect" name="server"></select>
-                <button class="btn btn-success w-100" type="submit">Connect to VPN</button>
+                <button class="btn btn-success w-100" type="submit" id="connectBtn">Connect to VPN</button>
             </form>
 
             <!-- Disconnect -->
@@ -73,6 +73,7 @@
     const PANEL_BASE   = window.location.pathname.replace(/\/?$/, '') + '/api/v1/';
     const STORAGE_KEY  = 'vpn-panel-backend';
     let   currentBackend = null;
+    let   lastStatus = null;  // most recent /status response, drives connect-button state
     let   pollTimer = null;
 
     function backendApi(suffix) {
@@ -136,6 +137,7 @@
     ];
 
     function renderStatus(data) {
+        lastStatus = data;
         const statusBox   = document.getElementById('statusBox');
         const statusText  = document.getElementById('statusText');
         const statusTable = document.getElementById('statusTable');
@@ -169,6 +171,38 @@
         statusTable.classList.toggle('d-none', tbody.children.length === 0);
 
         statusText.textContent = `Status: ${data.status}`;
+        updateConnectButton();
+    }
+
+    function updateConnectButton() {
+        const btn      = document.getElementById('connectBtn');
+        const selected = document.getElementById('serverSelect').value;
+        const connectedCode = lastStatus && lastStatus.status === 'Connected'
+            ? lastStatus.city_code
+            : null;
+
+        // Disable until we have a real selection (placeholder option uses
+        // disabled="true" and no value).
+        if (!selected) {
+            btn.disabled = true;
+            btn.textContent = 'Connect to VPN';
+            btn.className = 'btn btn-success w-100';
+            return;
+        }
+
+        if (!connectedCode) {
+            btn.disabled = false;
+            btn.textContent = 'Connect to VPN';
+            btn.className = 'btn btn-success w-100';
+        } else if (connectedCode === selected) {
+            btn.disabled = true;
+            btn.textContent = 'Already connected';
+            btn.className = 'btn btn-secondary w-100';
+        } else {
+            btn.disabled = false;
+            btn.textContent = 'Reconnect to selected endpoint';
+            btn.className = 'btn btn-warning w-100';
+        }
     }
 
     function updateStatus(force = false) {
@@ -227,6 +261,7 @@
                     .then(data => {
                         if (callerBackend !== currentBackend) return;
                         if (data.city_code) serverSelect.value = data.city_code;
+                        updateConnectButton();
                     });
             })
             .catch(err => {
@@ -240,10 +275,12 @@
 
     function selectBackend(name) {
         currentBackend = name;
+        lastStatus = null;
         localStorage.setItem(STORAGE_KEY, name);
         document.getElementById('backendSelect').value = name;
         setServerSelectPlaceholder('Loading server list…');
         document.getElementById('statusText').textContent = 'Status: …';
+        updateConnectButton();
         updateStatus();
         loadServers();
     }
@@ -276,6 +313,7 @@
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('refreshBtn').addEventListener('click', () => updateStatus(true));
         document.getElementById('backendSelect').addEventListener('change', e => selectBackend(e.target.value));
+        document.getElementById('serverSelect').addEventListener('change', updateConnectButton);
         loadBackends();
         pollTimer = setInterval(updateStatus, 10000);
     });
