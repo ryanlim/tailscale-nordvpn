@@ -1,3 +1,5 @@
 .env
 /tailscale/state/
 /control-panel/config/backends.json
+__pycache__/
+*.pyc

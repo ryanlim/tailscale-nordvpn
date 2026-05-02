@@ -2,7 +2,8 @@ name: ts-${INSTANCE_NAME}
 
 services:
   tailscale:
-    image: tailscale/tailscale:latest
+    build:
+      context: tailscale
     container_name: ts-tailscale-${INSTANCE_NAME}
     hostname: ts-tailscale
     command: [
@@ -27,6 +28,12 @@ services:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.forwarding=1
       - net.ipv6.conf.all.forwarding=1
+    healthcheck:
+      test: ["CMD-SHELL", "tailscale status --peers=false >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     networks:
       ts-net:
         ipv4_address: ${IP_TAILSCALE}
