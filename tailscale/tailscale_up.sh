@@ -2,6 +2,16 @@
 
 set -x
 
+# Run any executable hooks dropped into /scripts (bind-mounted from the
+# host's tailscale/scripts/) before bringing the daemon up. Useful for
+# host-specific setup like installing certs or extra packages. Files
+# missing the executable bit (e.g. README.txt) are skipped.
+if [ -d /scripts ]; then
+  for f in /scripts/*; do
+    [ -f "$f" ] && [ -x "$f" ] && "$f"
+  done
+fi
+
 tailscaled &
 
 sleep 10s
@@ -45,10 +55,41 @@ is_tailscale_healthy() {
 
 do_tailscale_up
 
+choose_cert_files() {
+  # Sets CERT_FILE / KEY_FILE to a coherent pair. If a real cert AND a
+  # real key are present under /etc/nginx/cert (bind-mounted from
+  # ./tailscale/cert/), use those. Otherwise generate self-signed stubs
+  # into /etc/nginx/cert-stub so nginx still has something to serve and
+  # HTTPS comes up — the bind-mount is read-only, so we can't write
+  # there even when we want to.
+  CERT_FILE=""
+  for f in /etc/nginx/cert/fullchain.pem /etc/nginx/cert/cert.pem; do
+    [ -f "$f" ] && CERT_FILE="$f" && break
+  done
+  KEY_FILE=""
+  for f in /etc/nginx/cert/privkey.pem /etc/nginx/cert/key.pem; do
+    [ -f "$f" ] && KEY_FILE="$f" && break
+  done
+  if [ -n "$CERT_FILE" ] && [ -n "$KEY_FILE" ]; then
+    return
+  fi
+
+  STUB_DIR=/etc/nginx/cert-stub
+  mkdir -p "$STUB_DIR"
+  if [ ! -f "$STUB_DIR/fullchain.pem" ] || [ ! -f "$STUB_DIR/privkey.pem" ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -subj "/CN=ts-tailscale-stub" \
+      -keyout "$STUB_DIR/privkey.pem" \
+      -out "$STUB_DIR/fullchain.pem"
+    chmod 600 "$STUB_DIR/privkey.pem"
+  fi
+  CERT_FILE="$STUB_DIR/fullchain.pem"
+  KEY_FILE="$STUB_DIR/privkey.pem"
+}
+
 write_nginx_config() {
-  # Always serve plain HTTP. Add the HTTPS server only if both cert files
-  # are present at /etc/nginx/cert/{fullchain,privkey}.pem (typically
-  # bind-mounted from ./tailscale/cert/ on the host).
+  choose_cert_files
+
   CONF=/etc/nginx/http.d/panel.conf
   cat <<EOF >"$CONF"
 server {
@@ -61,21 +102,6 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-EOF
-
-  # Cert filename is typically `fullchain.pem` (Let's Encrypt) or `cert.pem`.
-  # Key filename is typically `privkey.pem` (Let's Encrypt) or `key.pem`.
-  CERT_FILE=""
-  for f in /etc/nginx/cert/fullchain.pem /etc/nginx/cert/cert.pem; do
-    [ -f "$f" ] && CERT_FILE="$f" && break
-  done
-  KEY_FILE=""
-  for f in /etc/nginx/cert/privkey.pem /etc/nginx/cert/key.pem; do
-    [ -f "$f" ] && KEY_FILE="$f" && break
-  done
-
-  if [ -n "$CERT_FILE" ] && [ -n "$KEY_FILE" ]; then
-    cat <<EOF >>"$CONF"
 
 server {
     listen 443 ssl;
@@ -91,7 +117,6 @@ server {
     }
 }
 EOF
-  fi
 }
 
 write_nginx_config

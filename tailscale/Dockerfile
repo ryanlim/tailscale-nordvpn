@@ -7,10 +7,14 @@ FROM tailscale/tailscale:latest
 # container start, which previously wedged the proxy when downloads
 # stalled through the VPN tunnel.
 RUN apk add --no-cache \
+    bash \
+    python3 \ 
+    openssl \
     mtr \
     curl \
     prometheus-node-exporter \
     nginx \
+    openssl \
  && rm -f /etc/nginx/http.d/default.conf
 
 COPY tailscale_up.sh /tailscale_up.sh
