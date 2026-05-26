@@ -104,6 +104,14 @@ services:
     cap_add:
       - net_admin
       - sys_module
+    healthcheck:
+      # Real egress through the tunnel, not just "is wg0 up". Passes if either
+      # endpoint responds; brief reconnect windows are absorbed by retries.
+      test: ["CMD-SHELL", "curl -sS --max-time 8 -o /dev/null http://1.1.1.1/ || curl -sS --max-time 8 -o /dev/null http://www.gstatic.com/generate_204"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     networks:
       ts-net:
         ipv4_address: ${IP_NORDVPN}

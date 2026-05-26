@@ -29,6 +29,31 @@ chmod 600 "$PRIVATE_KEY_FILE"
 RECONNECT_AFTER_HOURS=${RECONNECT_AFTER_HOURS:-1}
 RECONNECT_AFTER_SECONDS=$((RECONNECT_AFTER_HOURS * 3600))
 
+# --- Tunnel egress watchdog -------------------------------------------------
+# While connected, probe real connectivity through the tunnel instead of
+# blindly sleeping until the next rotation. A dead tunnel (bad server, stale
+# handshake) is then caught within minutes and triggers an early reconnect to
+# a freshly-picked server.
+HEALTHCHECK_INTERVAL=${HEALTHCHECK_INTERVAL:-60}
+# Consecutive failed probes before forcing a reconnect (interval per cycle, so
+# 3 = ~3 minutes of sustained failure). Debounces transient blips.
+UNHEALTHY_THRESHOLD=${UNHEALTHY_THRESHOLD:-3}
+# Probe passes if ANY URL responds. First is an IP literal (no DNS) so a
+# DNS-only fault — which a reconnect can't fix — won't force churn; the second
+# also exercises DNS. We omit --fail: any HTTP response proves egress; only
+# connect/DNS/timeout failures (curl non-zero exit) count as "no egress".
+EGRESS_CHECK_URLS="${EGRESS_CHECK_URLS:-http://1.1.1.1/ http://www.gstatic.com/generate_204}"
+EGRESS_CHECK_TIMEOUT="${EGRESS_CHECK_TIMEOUT:-8}"
+
+has_egress() {
+  for url in $EGRESS_CHECK_URLS; do
+    if curl -sS --max-time "$EGRESS_CHECK_TIMEOUT" -o /dev/null "$url" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 env
 
 nohup python3 /webapp/app.py >/tmp/webapp.log 2>&1 &
@@ -49,8 +74,31 @@ while true; do
     continue
   fi
 
-  echo "Reconnect in ${RECONNECT_AFTER_SECONDS}s"
-  sleep "$RECONNECT_AFTER_SECONDS"
+  # Stay connected until the rotation interval elapses or the tunnel stops
+  # passing traffic, whichever comes first. If the host's own internet is
+  # down, the reconnect below fails at the API-lookup step and we fall into
+  # the 30s retry above — so a global outage backs off instead of thrashing
+  # through fresh servers that can't help.
+  echo "Connected; watching egress (rotate in ${RECONNECT_AFTER_SECONDS}s)"
+  ELAPSED=0
+  UNHEALTHY_COUNT=0
+  while [ "$ELAPSED" -lt "$RECONNECT_AFTER_SECONDS" ]; do
+    sleep "$HEALTHCHECK_INTERVAL"
+    ELAPSED=$((ELAPSED + HEALTHCHECK_INTERVAL))
+
+    if has_egress; then
+      UNHEALTHY_COUNT=0
+      continue
+    fi
+
+    UNHEALTHY_COUNT=$((UNHEALTHY_COUNT + 1))
+    echo "no egress through tunnel (count=$UNHEALTHY_COUNT/$UNHEALTHY_THRESHOLD)"
+    if [ "$UNHEALTHY_COUNT" -ge "$UNHEALTHY_THRESHOLD" ]; then
+      echo "tunnel not passing traffic; forcing early reconnect"
+      break
+    fi
+  done
+
   echo "--- $(date +%Y%m%d_%H%M%S) reconnecting ---"
   nordvpn disconnect || true
   sleep 1
