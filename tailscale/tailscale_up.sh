@@ -26,6 +26,14 @@ INSTANCE_NAME_=$(echo $INSTANCE_NAME | sed 's/_/-/g')
 # broken before we kick tailscale. 60s per cycle, so 2 = ~2 minutes.
 UNHEALTHY_THRESHOLD=2
 
+# Egress probe: URLs the watchdog fetches to prove real internet connectivity
+# through the VPN tunnel (default route -> nordvpn-wg -> WireGuard). The probe
+# passes if ANY URL responds, so a single provider blip won't trip it. The
+# first is an IP literal (no DNS) so a DNS-only fault — which kicking tailscale
+# can't fix — won't trigger a kick; the second also exercises DNS resolution.
+EGRESS_CHECK_URLS="${EGRESS_CHECK_URLS:-http://1.1.1.1/ http://www.gstatic.com/generate_204}"
+EGRESS_CHECK_TIMEOUT="${EGRESS_CHECK_TIMEOUT:-8}"
+
 do_tailscale_up() {
   # Re-issued on watchdog recovery as well as initial start. Auth key only
   # passed if tailscale is currently logged out and TAILSCALE_AUTH_KEY is set.
@@ -50,7 +58,23 @@ is_vpn_connected() {
 }
 
 is_tailscale_healthy() {
-  tailscale status --peers=false >/dev/null 2>&1
+  # Daemon liveness only. Bounded with timeout so a hung daemon can't stall
+  # the watchdog loop. Note this proves the daemon answers, NOT that traffic
+  # flows — has_egress covers actual connectivity.
+  timeout 10 tailscale status --peers=false >/dev/null 2>&1
+}
+
+has_egress() {
+  # Real connectivity check: can we actually reach the internet through the
+  # tunnel? Success = curl got any HTTP response (proves the full path works).
+  # We deliberately omit --fail: a 3xx/4xx still proves we reached a server;
+  # only connect/DNS/timeout failures (curl non-zero exit) mean "no egress".
+  for url in $EGRESS_CHECK_URLS; do
+    if curl -sS --max-time "$EGRESS_CHECK_TIMEOUT" -o /dev/null "$url" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 do_tailscale_up
@@ -135,17 +159,38 @@ while [ 1 ]; do
   ip route show default | grep -q "via $IP_NORDVPN" \
     || ip route replace default via $IP_NORDVPN dev eth0
 
-  if is_vpn_connected && ! is_tailscale_healthy; then
-    UNHEALTHY_COUNT=$((UNHEALTHY_COUNT + 1))
-    echo "tailscale unhealthy while VPN reports Connected (count=$UNHEALTHY_COUNT)"
-    if [ "$UNHEALTHY_COUNT" -ge "$UNHEALTHY_THRESHOLD" ]; then
-      echo "kicking tailscale"
-      tailscale down 2>/dev/null
-      sleep 2
-      do_tailscale_up
-      UNHEALTHY_COUNT=0
-    fi
-  else
+  # Safeguard: only evaluate tailscale's health when the VPN backend itself
+  # reports Connected. If the VPN is down, unreachable, or mid-reconnect,
+  # egress will fail for reasons kicking tailscale can't fix — hold off so we
+  # don't restart-loop during upstream outages or captive portals.
+  if ! is_vpn_connected; then
+    echo "VPN not reporting Connected; deferring tailscale health check"
     UNHEALTHY_COUNT=0
+    continue
+  fi
+
+  # VPN says Connected. Tailscale is healthy only if the daemon answers AND
+  # traffic actually reaches the internet through the tunnel. The egress probe
+  # is what catches the wedged-but-status-OK case the bare status check missed.
+  TS_OK=no; is_tailscale_healthy && TS_OK=yes
+  EGRESS_OK=no; has_egress && EGRESS_OK=yes
+
+  if [ "$TS_OK" = yes ] && [ "$EGRESS_OK" = yes ]; then
+    UNHEALTHY_COUNT=0
+    continue
+  fi
+
+  UNHEALTHY_COUNT=$((UNHEALTHY_COUNT + 1))
+  echo "tailscale unhealthy (daemon=$TS_OK egress=$EGRESS_OK) while VPN reports Connected (count=$UNHEALTHY_COUNT)"
+  if [ "$UNHEALTHY_COUNT" -ge "$UNHEALTHY_THRESHOLD" ]; then
+    echo "kicking tailscale"
+    tailscale down 2>/dev/null
+    sleep 2
+    do_tailscale_up
+    UNHEALTHY_COUNT=0
+    # Cooldown: give tailscale time to re-establish the tunnel and exit-node
+    # routing before the next probe, so a slow recovery doesn't re-trip us
+    # into an immediate second kick.
+    sleep 30
   fi
 done
