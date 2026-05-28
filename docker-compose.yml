@@ -88,6 +88,12 @@ services:
     container_name: ts-nordvpn-${INSTANCE_NAME}
     hostname: ts-nordvpn
     restart: always
+    # Bypass the host's resolver — needed before the tunnel is up, where
+    # captive portals / travel-router DNS often misbehave. Once the wg
+    # tunnel is established its own DNS routes via the tunnel.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.forwarding=1
