@@ -14,7 +14,16 @@ fi
 
 tailscaled &
 
-sleep 10s
+# Wait for the daemon's localapi to actually answer before issuing CLI
+# commands. A fixed sleep race-loses on slow boots: `tailscale up` then
+# runs before the daemon's state machine is ready, silently no-ops, and
+# the tunnel never comes up. Poll up to ~60s.
+i=0
+while [ $i -lt 60 ]; do
+  tailscale status >/dev/null 2>&1 && break
+  sleep 1
+  i=$((i + 1))
+done
 ps auxwwf
 
 ip route del default
@@ -35,12 +44,14 @@ EGRESS_CHECK_URLS="${EGRESS_CHECK_URLS:-http://1.1.1.1/ http://www.gstatic.com/g
 EGRESS_CHECK_TIMEOUT="${EGRESS_CHECK_TIMEOUT:-8}"
 
 do_tailscale_up() {
-  # Re-issued on watchdog recovery as well as initial start. Auth key only
-  # passed if tailscale is currently logged out and TAILSCALE_AUTH_KEY is set.
+  # Always pass --auth-key when TAILSCALE_AUTH_KEY is set: tailscale uses it
+  # only when the node needs to (re)authenticate and ignores it otherwise,
+  # so it's idempotent. The previous "only if `tailscale status` shows
+  # 'Logged out'" check missed real failure modes ("NeedsLogin",
+  # "Tailscale is starting", expired node key), leaving the daemon parked
+  # waiting for an interactive auth URL.
   AUTH_KEY_ARG=""
-  if [ -n "$TAILSCALE_AUTH_KEY" ] && tailscale status 2>&1 | grep -q "Logged out"; then
-    AUTH_KEY_ARG="--auth-key $TAILSCALE_AUTH_KEY"
-  fi
+  [ -n "$TAILSCALE_AUTH_KEY" ] && AUTH_KEY_ARG="--auth-key $TAILSCALE_AUTH_KEY"
 
   if [ -n "$TAILSCALE_UP_LOGIN_SERVER" ]; then
     tailscale up --advertise-exit-node --hostname $INSTANCE_NAME_ --login-server $TAILSCALE_UP_LOGIN_SERVER $AUTH_KEY_ARG
