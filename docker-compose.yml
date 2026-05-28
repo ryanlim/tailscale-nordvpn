@@ -11,6 +11,13 @@ services:
     ]
     user: root
     restart: always
+    # Bypass the host's resolver — DNS for the coordination server and
+    # DERP relays needs to work before any tunnel is up. Tailscale only
+    # resolves external names (IP_NORDVPN/IP_PANEL are literals), so
+    # losing docker's embedded resolver here is safe.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     volumes:
       - "/dev/net/tun:/dev/net/tun"
       - "./tailscale/state:/var/lib/tailscale"
@@ -49,6 +56,11 @@ services:
 #      '/scripts/nordvpn_up.sh'
 #    ]
 #    restart: always
+#    # Bypass the host's resolver — pre-tunnel DNS for api.nordvpn.com
+#    # needs to work on flaky travel-router / captive-portal networks.
+#    dns:
+#      - 1.1.1.1
+#      - 8.8.8.8
 #    sysctls:
 #      - net.ipv4.ip_forward=1
 #      - net.ipv4.conf.all.forwarding=1
